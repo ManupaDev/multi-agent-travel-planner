@@ -99,9 +99,17 @@ def requirements_subgraph_node(
     # No interrupt, execution completed - extract requirements
     requirements = subgraph_result.get("requirements")
 
+    # Generate conversational summary from requirements
+    if requirements:
+        origin = requirements.get('trip', {}).get('origin', {}).get('city', 'your origin')
+        destination = requirements.get('trip', {}).get('destination', {}).get('city', 'your destination')
+        summary = f"Perfect! I've gathered your travel requirements for a trip from {origin} to {destination}. Let me create an itinerary for you..."
+    else:
+        summary = "I've gathered your travel requirements. Let me create an itinerary for you..."
+
     # The result contains 'requirements' field populated when complete
     return {
-        "messages": [AIMessage(content=json.dumps(requirements), name="requirements")],
+        "messages": [AIMessage(content=summary, name="requirements")],
         "requirements": requirements,
         "itinerary": None,
         "bookings": None,
@@ -127,8 +135,15 @@ def planner_agent_node(state: TravelSystemState) -> TravelSystemState:
 
     itinerary = response["structured_response"].itinerary.model_dump()
 
+    # Generate conversational summary
+    num_days = len(itinerary.get('days', []))
+    if num_days > 0:
+        summary = f"Great! I've created a {num_days}-day itinerary for you. Now let me book your flights and accommodations..."
+    else:
+        summary = "I've created your itinerary. Now let me book your flights and accommodations..."
+
     return {
-        "messages": [AIMessage(content=json.dumps(itinerary), name="planner")],
+        "messages": [AIMessage(content=summary, name="planner")],
         "requirements": requirements,
         "itinerary": itinerary,
         "bookings": None,
@@ -164,8 +179,21 @@ Return booking confirmations for both flight and hotel."""
     # Extract structured bookings from response
     bookings = response["structured_response"].bookings.model_dump()
 
+    # Generate conversational confirmation
+    summary = "Perfect! I've completed your bookings."
+
+    if bookings.get('flights'):
+        flight_ref = bookings['flights'].get('reservation_ref', 'N/A')
+        summary += f" Your flight is confirmed (Reference: {flight_ref})."
+
+    if bookings.get('hotels'):
+        hotel_ref = bookings['hotels'].get('reservation_ref', 'N/A')
+        summary += f" Your hotel reservation is also confirmed (Reference: {hotel_ref})."
+
+    summary += " All details are shown below. Have a wonderful trip!"
+
     return {
-        "messages": [AIMessage(content=json.dumps(bookings), name="booker")],
+        "messages": [AIMessage(content=summary, name="booker")],
         "requirements": requirements,
         "itinerary": itinerary,
         "bookings": bookings,
