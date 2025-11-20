@@ -11,10 +11,10 @@ class FlightSearchInput(BaseModel):
     """Input schema for flight search requests."""
 
     origin: str = Field(
-        ..., description="The IATA code for the origin airport (e.g., 'CMB')."
+        ..., description="The IATA code for the origin airport"
     )
     destination: str = Field(
-        ..., description="The IATA code for the destination airport (e.g., 'BKK')."
+        ..., description="The IATA code for the destination airport"
     )
 
 

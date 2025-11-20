@@ -94,7 +94,7 @@ async def stream_langgraph_to_vercel(
                 interrupt_value = event["__interrupt__"]
 
                 # Extract interrupt message
-                if isinstance(interrupt_value, list) and len(interrupt_value) > 0:
+                if isinstance(interrupt_value, (list, tuple)) and len(interrupt_value) > 0:
                     interrupt_obj = interrupt_value[0]
                     if hasattr(interrupt_obj, "value"):
                         interrupt_message = str(interrupt_obj.value)

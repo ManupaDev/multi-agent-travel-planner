@@ -60,7 +60,7 @@ def requirements_subgraph_node(
     if "__interrupt__" in subgraph_result:
         # Extract interrupt message
         interrupt_value = subgraph_result["__interrupt__"]
-        if isinstance(interrupt_value, list) and len(interrupt_value) > 0:
+        if isinstance(interrupt_value, (list, tuple)) and len(interrupt_value) > 0:
             # Extract the interrupt value - could be a dict or string
             interrupt_obj = interrupt_value[0]
             if hasattr(interrupt_obj, "value"):
@@ -84,7 +84,7 @@ def requirements_subgraph_node(
         # Check again for interrupts (subgraph might need more info)
         if "__interrupt__" in subgraph_result:
             interrupt_value = subgraph_result["__interrupt__"]
-            if isinstance(interrupt_value, list) and len(interrupt_value) > 0:
+            if isinstance(interrupt_value, (list, tuple)) and len(interrupt_value) > 0:
                 interrupt_obj = interrupt_value[0]
                 if hasattr(interrupt_obj, "value"):
                     interrupt_message = str(interrupt_obj.value)
