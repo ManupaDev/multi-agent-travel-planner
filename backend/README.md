@@ -53,6 +53,7 @@ Start the FastAPI server with Uvicorn:
 
 ```bash
 uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 8585
 ```
 
 The server will start at:
