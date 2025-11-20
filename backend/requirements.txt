@@ -1,0 +1,10 @@
+fastapi>=0.120.0
+langchain>=1.0.2
+langchain-openai>=1.0.1
+langchain-community>=0.3.0
+langgraph>=1.0.1
+pydantic>=2.12.3
+requests>=2.31.0
+uvicorn[standard]>=0.38.0
+ddgs>=9.6.1
+pyprojroot>=0.3.0

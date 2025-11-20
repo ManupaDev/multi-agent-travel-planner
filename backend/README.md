@@ -1,3 +1,67 @@
+# Multi-Agent Travel Planner Backend
+
+A FastAPI-based backend service for the multi-agent travel planner application, featuring LangChain and LangGraph for intelligent travel planning and booking.
+
+## Prerequisites
+
+- Python 3.13 or higher
+- pip (Python package installer)
+
+## Installation
+
+### 1. Create Virtual Environment
+
+```bash
+cd multi-agent-travel-planner/backend
+python3.13 -m venv .venv
+```
+
+Or if Python 3.13 is your default:
+```bash
+python -m venv .venv
+```
+
+### 2. Activate Virtual Environment
+
+**macOS/Linux:**
+```bash
+source .venv/bin/activate
+```
+
+**Windows:**
+```bash
+.venv\Scripts\activate
+```
+
+### 3. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+## Environment Setup
+
+Create a `.env` file in the backend directory with the following variables:
+
+```env
+OPENAI_API_KEY=your_openai_api_key_here
+```
+
+## Running the Server
+
+Start the FastAPI server with Uvicorn:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+The server will start at:
+- **URL:** http://localhost:8585
+- **API Docs:** http://localhost:8585/docs
+- **ReDoc:** http://localhost:8585/redoc
+
+---
+
 # Convex API Endpoints
 
 This section provides with all the convex API Endpoints to interact with the airline booking database
