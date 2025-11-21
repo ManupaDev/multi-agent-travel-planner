@@ -23,6 +23,7 @@ Usage:
 
 import json
 import uuid
+import logging
 from typing import AsyncIterator, Dict, Any, Optional, Callable
 from datetime import datetime
 
@@ -30,6 +31,8 @@ from langgraph.graph import StateGraph
 from langchain_core.messages import BaseMessage, AIMessage
 
 from app.utils.message_extractors import default_message_extractor
+
+logger = logging.getLogger(__name__)
 
 
 class LangGraphToVercelAdapter:
@@ -90,7 +93,7 @@ class LangGraphToVercelAdapter:
         Stream LangGraph execution as Vercel Data Stream Protocol events.
 
         This is the main entry point for the adapter. It transforms LangGraph's
-        event stream into Vercel-compatible SSE events.
+        state updates into Vercel-compatible SSE events.
 
         Args:
             graph: The compiled LangGraph graph to execute
@@ -105,31 +108,40 @@ class LangGraphToVercelAdapter:
                 # event is like: 'data: {"type":"text-delta","delta":"Hello"}\\n\\n'
                 response.write(event)
         """
-        self.current_message_id = self._create_message_id()
-
-        # Send message start event
-        yield self._format_sse_event({
-            "type": "start",
-            "messageId": self.current_message_id,
-        })
-
         # Stream the graph execution
+        logger.info(f"[ADAPTER] Starting stream with config: {config}")
+        logger.info(f"[ADAPTER] Initial state type: {type(initial_state)}")
+
         try:
-            async for event in graph.astream_events(
+            chunk_count = 0
+            async for chunk in graph.astream(
                 initial_state,
                 config,
-                version="v2",
+                stream_mode="values",
             ):
-                # Handle different event types
-                async for sse_event in self._handle_event(event):
+                chunk_count += 1
+                print(f"\n[ADAPTER] ===== Received chunk #{chunk_count} =====")
+                print(f"[ADAPTER] Chunk type: {type(chunk)}")
+                print(f"[ADAPTER] Chunk keys: {list(chunk.keys())}")
+                logger.info(f"[ADAPTER] Received chunk #{chunk_count}: {list(chunk.keys())}")
+
+                # chunk is the state dict itself
+                async for sse_event in self._handle_node_update(chunk):
+                    logger.info(f"[ADAPTER] Yielding SSE event: {sse_event[:100]}...")
                     yield sse_event
+
+            logger.info(f"[ADAPTER] Stream completed. Total chunks: {chunk_count}")
 
             # Send finish event after successful completion
             yield self._format_sse_event({
                 "type": "finish",
             })
 
+            # Terminate stream with [DONE]
+            yield "data: [DONE]\n\n"
+
         except Exception as e:
+            logger.error(f"[ADAPTER] Error during streaming: {e}", exc_info=True)
             # Send error event
             yield self._format_sse_event({
                 "type": "error",
@@ -137,140 +149,181 @@ class LangGraphToVercelAdapter:
             })
             return
 
-    async def _handle_event(self, event: Dict[str, Any]) -> AsyncIterator[str]:
+    async def _handle_node_update(self, chunk: Dict[str, Any]) -> AsyncIterator[str]:
         """
-        Convert a single LangGraph event to Vercel SSE event(s).
+        Process state from astream(stream_mode="values").
 
         Args:
-            event: LangGraph event dictionary
+            chunk: The state dict itself (not wrapped in node names)
+                  Format: {'messages': [...], 'requirements': ..., 'itinerary': ..., 'bookings': ...}
 
         Yields:
             SSE-formatted event strings
         """
-        event_type = event.get("event")
-        event_data = event.get("data", {})
+        # With stream_mode="values", chunk IS the state dict
+        state = chunk
+        print(f"[STATE] Processing state with keys: {list(state.keys())}")
+        logger.info(f"[STATE] Processing state with keys: {list(state.keys())}")
 
-        # Handle tool calls
-        if event_type == "on_tool_start":
-            async for sse_event in self._handle_tool_start(event):
+        # Check for interrupt first
+        if "__interrupt__" in state:
+            print(f"[STATE] Interrupt detected")
+            logger.info(f"[STATE] Interrupt detected")
+            async for sse_event in self._handle_interrupt(state):
                 yield sse_event
+            return  # Stop processing after interrupt
 
-        elif event_type == "on_tool_end":
-            async for sse_event in self._handle_tool_end(event):
-                yield sse_event
+        # Extract and stream messages
+        if "messages" in state:
+            messages = state["messages"]
+            print(f"[STATE] Found {len(messages) if messages else 0} messages")
+            logger.info(f"[STATE] Found {len(messages) if messages else 0} messages")
 
-        # Handle state updates (for streaming messages)
-        elif event_type == "on_chain_stream":
-            async for sse_event in self._handle_chain_stream(event):
-                yield sse_event
+            if messages:
+                # Get the last message (most recent addition)
+                last_message = messages[-1]
+                print(f"[STATE] Last message type: {type(last_message)}")
+                logger.info(f"[STATE] Last message type: {type(last_message)}")
 
-        # Handle interrupts
-        elif event_type == "on_chain_end":
-            # Check for interrupts in the final state
-            output = event_data.get("output", {})
-            if "__interrupt__" in output:
-                async for sse_event in self._handle_interrupt(output):
-                    yield sse_event
+                # Only stream AIMessage content (not HumanMessage)
+                # User messages are already in the frontend
+                if not isinstance(last_message, AIMessage):
+                    print(f"[STATE] Skipping non-AI message")
+                    logger.info(f"[STATE] Skipping non-AI message")
+                    return  # Don't stream user messages
 
-    async def _handle_tool_start(self, event: Dict[str, Any]) -> AsyncIterator[str]:
-        """
-        Handle tool call start event.
+                # Extract content from AI message
+                content = None
+                if isinstance(last_message, BaseMessage):
+                    content = last_message.content
+                elif isinstance(last_message, dict):
+                    content = last_message.get("content", "")
+                else:
+                    content = str(last_message)
 
-        Yields:
-            Tool call SSE events
-        """
-        tool_name = event.get("name", "unknown_tool")
-        tool_input = event.get("data", {}).get("input", {})
+                print(f"[STATE] Extracted content length: {len(content) if content else 0}")
+                logger.info(f"[STATE] Extracted content length: {len(content) if content else 0}")
+                if content:
+                    print(f"[STATE] Content preview: {content[:100]}")
+                    logger.info(f"[STATE] Content preview: {content[:100]}")
 
-        # Generate a unique tool call ID
-        tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
+                # Stream the content if available
+                if content and content.strip():
+                    # Create unique message ID for this message
+                    message_id = self._create_message_id()
+                    print(f"[STATE] Streaming message with ID: {message_id}")
+                    logger.info(f"[STATE] Streaming message with ID: {message_id}")
 
-        # Send tool call event
-        yield self._format_sse_event({
-            "type": "tool-call",
-            "toolCallId": tool_call_id,
-            "toolName": tool_name,
-            "args": tool_input,
-        })
+                    # Send text-start event
+                    yield self._format_sse_event({
+                        "type": "text-start",
+                        "id": message_id,
+                    })
 
-    async def _handle_tool_end(self, event: Dict[str, Any]) -> AsyncIterator[str]:
-        """
-        Handle tool call completion event.
+                    # Send text-delta event
+                    yield self._format_sse_event({
+                        "type": "text-delta",
+                        "id": message_id,
+                        "delta": content,
+                    })
 
-        Yields:
-            Tool result SSE events
-        """
-        tool_name = event.get("name", "unknown_tool")
-        tool_output = event.get("data", {}).get("output")
-
-        # Send tool result event
-        yield self._format_sse_event({
-            "type": "tool-result",
-            "toolName": tool_name,
-            "result": tool_output,
-        })
-
-    async def _handle_chain_stream(self, event: Dict[str, Any]) -> AsyncIterator[str]:
-        """
-        Handle state streaming event - extract and stream message content.
-
-        This is where we extract conversational text from the state using
-        the configured message_extractor.
-
-        Yields:
-            Text delta SSE events
-        """
-        chunk = event.get("data", {}).get("chunk", {})
-
-        # Try to extract message from the state chunk
-        if "messages" in chunk and chunk["messages"]:
-            last_message = chunk["messages"][-1]
-
-            # Extract text content
-            if isinstance(last_message, BaseMessage):
-                text = last_message.content
-            elif isinstance(last_message, dict):
-                text = last_message.get("content", "")
+                    # Send text-end event
+                    yield self._format_sse_event({
+                        "type": "text-end",
+                        "id": message_id,
+                    })
+                else:
+                    logger.warning(f"[STATE] Content is empty or whitespace only")
             else:
-                text = str(last_message)
+                logger.warning(f"[STATE] Messages array is empty")
+        else:
+            logger.warning(f"[STATE] No 'messages' key in state")
 
-            # Stream the text if we have any
-            if text and text.strip():
-                # Send text delta event
-                yield self._format_sse_event({
-                    "type": "text-delta",
-                    "id": self.current_message_id,
-                    "delta": text,
-                })
+        # Optionally stream custom data fields (for travel planner use case)
+        if "requirements" in state and state["requirements"]:
+            yield self._format_sse_event({
+                "type": "data-requirements",
+                "data": state["requirements"],
+            })
 
-    async def _handle_interrupt(self, output: Dict[str, Any]) -> AsyncIterator[str]:
+        if "itinerary" in state and state["itinerary"]:
+            yield self._format_sse_event({
+                "type": "data-itinerary",
+                "data": state["itinerary"],
+            })
+
+        if "bookings" in state and state["bookings"]:
+            yield self._format_sse_event({
+                "type": "data-bookings",
+                "data": state["bookings"],
+            })
+
+    async def _handle_interrupt(self, state_update: Dict[str, Any]) -> AsyncIterator[str]:
         """
         Handle graph interruption (human-in-the-loop).
 
+        When a LangGraph node calls interrupt(message), LangGraph stores an Interrupt
+        object in state["__interrupt__"] as a list. We extract the message and stream
+        it as text-delta events, then send a finish event with interrupt reason.
+
         Args:
-            output: The output dictionary containing interrupt information
+            state_update: The state update containing interrupt information
 
         Yields:
-            Finish event with interrupt reason and message
+            Text events with interrupt message, then finish event
         """
-        interrupt_value = output.get("__interrupt__", [])
+        interrupt_list = state_update.get("__interrupt__", [])
+        print(f"[INTERRUPT] Interrupt list length: {len(interrupt_list) if isinstance(interrupt_list, list) else 'N/A'}")
+        logger.info(f"[INTERRUPT] Interrupt list type: {type(interrupt_list)}, length: {len(interrupt_list) if isinstance(interrupt_list, list) else 'N/A'}")
 
-        # Extract interrupt message
+        # Extract the interrupt message from the Interrupt object
+        # Format: [Interrupt(value="message")]
         interrupt_message = ""
-        if isinstance(interrupt_value, (list, tuple)) and len(interrupt_value) > 0:
-            interrupt_obj = interrupt_value[0]
+        if interrupt_list:
+            interrupt_obj = interrupt_list[0]
+            logger.info(f"[INTERRUPT] Interrupt object type: {type(interrupt_obj)}")
+
+            # Interrupt objects have a .value attribute
             if hasattr(interrupt_obj, "value"):
                 interrupt_message = str(interrupt_obj.value)
+                print(f"[INTERRUPT] Extracted message: {interrupt_message[:100]}...")
+                logger.info(f"[INTERRUPT] Extracted message from .value: {interrupt_message}")
             else:
+                # Fallback if structure is different
                 interrupt_message = str(interrupt_obj)
-        else:
-            interrupt_message = str(interrupt_value)
+                logger.info(f"[INTERRUPT] Using string representation: {interrupt_message}")
 
-        # Send finish event with interrupt
+        # Stream the interrupt message as text events (so frontend displays it)
+        if interrupt_message:
+            message_id = self._create_message_id()
+            print(f"[INTERRUPT] Streaming interrupt message with ID: {message_id}")
+            logger.info(f"[INTERRUPT] Streaming interrupt message with ID: {message_id}")
+
+            # Send text-start event
+            yield self._format_sse_event({
+                "type": "text-start",
+                "id": message_id,
+            })
+
+            # Send text-delta event with interrupt message
+            yield self._format_sse_event({
+                "type": "text-delta",
+                "id": message_id,
+                "delta": interrupt_message,
+            })
+
+            # Send text-end event
+            yield self._format_sse_event({
+                "type": "text-end",
+                "id": message_id,
+            })
+
+        # Send finish event with interrupt reason
+        print(f"[INTERRUPT] Sending finish event")
+        logger.info(f"[INTERRUPT] Sending finish event with interrupt reason")
         yield self._format_sse_event({
             "type": "finish",
             "finishReason": "interrupt",
-            "interruptMessage": interrupt_message,
         })
 
     async def stream_with_final_state(
