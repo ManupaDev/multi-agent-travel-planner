@@ -1,16 +1,22 @@
 """
-Streaming service for the travel system chat endpoint.
+Pluggable adapter-based streaming service for the travel system.
 
-This module provides async streaming functionality for the full travel
-system pipeline using the Vercel Data Stream Protocol.
+This demonstrates how to use the LangGraphToVercelAdapter for clean
+separation of concerns between agentic logic and streaming protocol.
+
+Key features:
+- Uses pluggable adapter instead of tightly-coupled streaming
+- No graph-specific logic in streaming layer
+- Easily reusable with other LangGraph graphs
+- Customizable message extraction strategies
 """
 
-from typing import AsyncGenerator, Any, Dict
+from typing import AsyncGenerator
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
-from app.agents.travel_system_graph import travel_system_graph
-from app.utils.vercel_stream import stream_langgraph_to_vercel
+from app.agents.travel_system_graph import travel_system_graph, TravelSystemState
+from app.utils.langgraph_vercel_adapter import stream_langgraph_to_vercel
 
 
 async def stream_travel_system_chat(
@@ -19,12 +25,13 @@ async def stream_travel_system_chat(
     resume: bool = False
 ) -> AsyncGenerator[str, None]:
     """
-    Stream the travel system chat execution as Vercel protocol events.
+    Stream the travel system using the pluggable adapter.
 
-    This function orchestrates the full pipeline:
-    1. Requirements gathering (with potential interrupts)
-    2. Itinerary planning
-    3. Booking execution
+    This uses the LangGraphToVercelAdapter which provides:
+    - Clean separation between graph logic and streaming
+    - Works with any LangGraph graph
+    - No hardcoded field checks (requirements, itinerary, bookings)
+    - Pluggable message extraction
 
     Args:
         message: User message or resume input
@@ -41,8 +48,6 @@ async def stream_travel_system_chat(
         initial_state = Command(resume=message)
     else:
         # Initial invocation
-        from app.agents.travel_system_graph import TravelSystemState
-
         initial_state = TravelSystemState(
             messages=[HumanMessage(content=message)],
             requirements=None,
@@ -50,11 +55,91 @@ async def stream_travel_system_chat(
             bookings=None,
         )
 
-    # Stream the graph execution
+    # Stream using the pluggable adapter!
+    # No need to specify stream_mode or graph-specific logic
     async for event in stream_langgraph_to_vercel(
         graph=travel_system_graph,
         initial_state=initial_state,
         config=config,
-        stream_mode="values"  # Use values to get full state updates
+    ):
+        yield event
+
+
+# Example: Custom extractor for specific use case
+async def stream_travel_system_with_custom_extractor(
+    message: str,
+    thread_id: str,
+    resume: bool = False
+) -> AsyncGenerator[str, None]:
+    """
+    Demonstrates using a custom message extractor.
+
+    This could be useful if you want to extract messages from a specific
+    field or combine multiple fields into the conversational text.
+    """
+    from app.utils.message_extractors import MessageExtractorChain, summary_field_extractor, default_message_extractor
+    from app.utils.langgraph_vercel_adapter import LangGraphToVercelAdapter
+
+    # Create custom extractor chain
+    # Try summary field first, fallback to messages
+    extractor = MessageExtractorChain([
+        summary_field_extractor,
+        default_message_extractor,
+    ])
+
+    # Create adapter with custom extractor
+    adapter = LangGraphToVercelAdapter(message_extractor=extractor.extract)
+
+    config = {"configurable": {"thread_id": thread_id}}
+
+    if resume:
+        initial_state = Command(resume=message)
+    else:
+        initial_state = TravelSystemState(
+            messages=[HumanMessage(content=message)],
+            requirements=None,
+            itinerary=None,
+            bookings=None,
+        )
+
+    # Stream using custom adapter
+    async for event in adapter.stream(
+        graph=travel_system_graph,
+        initial_state=initial_state,
+        config=config,
+    ):
+        yield event
+
+
+# Example: Any other LangGraph graph can use the same adapter!
+async def stream_any_langgraph_graph(
+    graph,  # Any compiled LangGraph graph
+    message: str,
+    thread_id: str,
+) -> AsyncGenerator[str, None]:
+    """
+    Generic streaming function that works with ANY LangGraph graph.
+
+    This demonstrates the true power of the pluggable adapter:
+    - No graph-specific code
+    - No hardcoded field checks
+    - Just pass your graph and state
+
+    Requirements:
+    - Graph state must extend MessagesState
+    - Nodes should return AIMessage objects
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+
+    # Minimal initial state (works with any MessagesState-based graph)
+    initial_state = {
+        "messages": [HumanMessage(content=message)]
+    }
+
+    # Same adapter works for ANY graph!
+    async for event in stream_langgraph_to_vercel(
+        graph=graph,
+        initial_state=initial_state,
+        config=config,
     ):
         yield event

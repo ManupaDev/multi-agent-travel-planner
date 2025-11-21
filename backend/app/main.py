@@ -1,6 +1,5 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.requirements import router as requirements_router
 from app.api.travel_system import router as travel_system_router
 
 app = FastAPI(title="Multi-Agent Travel Planner", version="0.1.0")
@@ -20,7 +19,6 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-app.include_router(requirements_router, prefix="/requirements", tags=["requirements"])
 app.include_router(travel_system_router, prefix="/travel-system", tags=["travel-system"])
 
 

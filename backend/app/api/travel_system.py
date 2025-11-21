@@ -1,13 +1,8 @@
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from app.api.models.travel_system import (
-    TravelSystemChatRequest,
-    TravelSystemChatResponse,
-    VercelChatRequest,
-)
-from app.api.services.travel_system_service import process_travel_system_chat
+from app.api.models.travel_system import VercelChatRequest
 from app.api.services.travel_system_streaming_service import stream_travel_system_chat
-from app.utils.vercel_stream import patch_vercel_headers
+from app.utils.http_headers import patch_vercel_headers
 from app.utils.message_transformer import extract_user_message
 
 router = APIRouter()
@@ -16,11 +11,21 @@ router = APIRouter()
 @router.post("/chat")
 async def travel_system_chat_streaming(request: VercelChatRequest):
     """
-    Streaming chat endpoint for the full travel system pipeline.
-    Handles requirements gathering, itinerary planning, and bookings.
+    Streaming chat endpoint using the pluggable LangGraph-to-Vercel adapter.
 
-    Accepts Vercel AI SDK request format and transforms UI messages internally.
-    Uses Vercel Data Stream Protocol for real-time streaming to frontend.
+    This endpoint uses clean separation of concerns:
+    - Core agentic logic (LangGraph) is unchanged
+    - Adapter layer handles streaming protocol transformation
+    - No coupling between graph structure and streaming protocol
+
+    Architecture:
+    - Pluggable adapter works with any LangGraph graph
+    - Configurable message extraction strategies
+    - Easy to customize and maintain
+    - Well-tested and documented
+
+    Compatible with Vercel AI SDK's useChat and useAssistant hooks.
+    Supports interrupts for human-in-the-loop workflows.
     """
     # Transform UI messages to message string
     message = extract_user_message(request.messages)
@@ -38,25 +43,4 @@ async def travel_system_chat_streaming(request: VercelChatRequest):
     )
 
     return patch_vercel_headers(response)
-
-
-@router.post("/chat-sync", response_model=TravelSystemChatResponse)
-async def travel_system_chat_sync(request: TravelSystemChatRequest):
-    """
-    Legacy synchronous chat endpoint for the full travel system pipeline.
-
-    This endpoint is kept for backward compatibility.
-    New clients should use the streaming /chat endpoint.
-    """
-    message, is_interrupt, requirements, itinerary, bookings = process_travel_system_chat(
-        request.message, request.thread_id, request.resume
-    )
-
-    return TravelSystemChatResponse(
-        message=message,
-        is_interrupt=is_interrupt,
-        requirements=requirements,
-        itinerary=itinerary,
-        bookings=bookings,
-    )
 
