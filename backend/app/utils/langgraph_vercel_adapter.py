@@ -124,6 +124,11 @@ class LangGraphToVercelAdapter:
                 async for sse_event in self._handle_event(event):
                     yield sse_event
 
+            # Send finish event after successful completion
+            yield self._format_sse_event({
+                "type": "finish",
+            })
+
         except Exception as e:
             # Send error event
             yield self._format_sse_event({
