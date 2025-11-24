@@ -32,6 +32,7 @@ async def travel_system_chat_streaming(request: VercelChatRequest):
 
     # Use thread_id from body if provided, otherwise use conversation id
     thread_id = request.thread_id or request.id
+    print(f"Thread ID: {thread_id}")
 
     response = StreamingResponse(
         stream_travel_system_chat(
