@@ -2,14 +2,23 @@ import json
 from typing import Optional
 
 from langchain.messages import HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.types import interrupt, Command
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.prebuilt import ToolNode
 
-from app.agents.travel_system_agents import requirements_agent
+from app.core.llm import model
+from app.agents.tools.flight_tools import search_flight_availability
+from app.agents.response_models.requirements_agent import RequirementsAgentResponseModel
+from app.agents.prompts.travel_system import REQUIREMENTS_AGENT_SYSTEM_PROMPT
 
 
 checkpointer = InMemorySaver()
+
+# Create ToolNode for automatic tool execution
+tools = [search_flight_availability]
+tool_node = ToolNode(tools)
 
 
 class RequirementsGraphState(MessagesState):
@@ -19,11 +28,38 @@ class RequirementsGraphState(MessagesState):
 
 
 def requirements_agent_node(state: RequirementsGraphState) -> RequirementsGraphState:
-    response = requirements_agent.invoke({"messages": state["messages"]})
+    """
+    Requirements agent node that uses model.bind_tools() for transparent tool calling.
 
-    response = response["structured_response"]
-    requirements_response = response.requirements
+    This allows the streaming adapter to see AIMessage.tool_calls and ToolMessages,
+    enabling real-time tool event streaming to the frontend.
+    """
+    # Bind tools and structured output to model
+    model_with_tools = model.bind_tools(tools)
+    model_with_structured_output = model_with_tools.with_structured_output(
+        RequirementsAgentResponseModel
+    )
 
+    # Prepare messages with system prompt
+    messages = [SystemMessage(content=REQUIREMENTS_AGENT_SYSTEM_PROMPT)] + state[
+        "messages"
+    ]
+
+    # Invoke model
+    response = model_with_tools.invoke(messages)
+
+    # Check if model wants to call tools
+    if hasattr(response, "tool_calls") and response.tool_calls:
+        # Return AIMessage with tool_calls - ToolNode will handle execution
+        print(f"[REQUIREMENTS] Model requesting {len(response.tool_calls)} tool call(s)")
+        return {"messages": [response]}
+
+    # No tool calls - this should be the final response
+    # Re-invoke with structured output to get RequirementsAgentResponseModel
+    structured_response = model_with_structured_output.invoke(messages)
+    requirements_response = structured_response.requirements
+
+    # Check if we need more info from user
     if requirements_response.missing_info.question != "":
         return {
             "messages": [
@@ -34,7 +70,7 @@ def requirements_agent_node(state: RequirementsGraphState) -> RequirementsGraphS
             "requirements": None,
         }
 
-    # Store complete requirements as dict in state
+    # Requirements are complete
     return {
         "messages": [],
         "requirements_complete": True,
@@ -43,8 +79,27 @@ def requirements_agent_node(state: RequirementsGraphState) -> RequirementsGraphS
     }
 
 
-def should_ask_user_for_info(state: RequirementsGraphState) -> bool:
-    return not state["requirements_complete"]
+def route_after_agent(state: RequirementsGraphState) -> str:
+    """
+    Route after requirements_agent executes.
+
+    Routes to:
+    - "tools" if the model wants to call tools
+    - "ask_user_for_info" if requirements are incomplete (need user input)
+    - END if requirements are complete
+    """
+    # Check if last message has tool calls
+    messages = state["messages"]
+    if messages:
+        last_message = messages[-1]
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "tools"
+
+    # No tool calls - check if requirements are complete
+    if not state["requirements_complete"]:
+        return "ask_user_for_info"
+
+    return END
 
 
 def ask_user_for_info(state: RequirementsGraphState) -> RequirementsGraphState:
@@ -58,15 +113,30 @@ def ask_user_for_info(state: RequirementsGraphState) -> RequirementsGraphState:
     }
 
 
+# Build graph with tool execution support
 graph = StateGraph(RequirementsGraphState)
 graph.add_node("requirements_agent", requirements_agent_node)
+graph.add_node("tools", tool_node)  # ToolNode handles tool execution automatically
 graph.add_node("ask_user_for_info", ask_user_for_info)
+
+# Routing
 graph.add_edge(START, "requirements_agent")
+
+# After agent, route based on tool calls and completion status
 graph.add_conditional_edges(
     "requirements_agent",
-    should_ask_user_for_info,
-    {True: "ask_user_for_info", False: END},
+    route_after_agent,
+    {
+        "tools": "tools",  # Execute tools
+        "ask_user_for_info": "ask_user_for_info",  # Need more info from user
+        END: END,  # Requirements complete
+    },
 )
+
+# After tools execute, loop back to agent
+graph.add_edge("tools", "requirements_agent")
+
+# After asking user, loop back to agent
 graph.add_edge("ask_user_for_info", "requirements_agent")
 
 compiled_graph = graph.compile(checkpointer=checkpointer)

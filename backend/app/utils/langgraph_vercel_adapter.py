@@ -28,7 +28,7 @@ from typing import AsyncIterator, Dict, Any, Optional, Callable
 from datetime import datetime
 
 from langgraph.graph import StateGraph
-from langchain_core.messages import BaseMessage, AIMessage
+from langchain_core.messages import BaseMessage, AIMessage, ToolMessage
 
 from app.utils.message_extractors import default_message_extractor
 
@@ -83,6 +83,70 @@ class LangGraphToVercelAdapter:
         unique_id = uuid.uuid4().hex[:8]
         return f"msg_{timestamp}_{unique_id}"
 
+    async def _handle_tool_calls(self, message: AIMessage) -> AsyncIterator[str]:
+        """
+        Stream tool events from AIMessage.tool_calls following Vercel Data Stream Protocol.
+
+        Sends tool-input-start followed by tool-input-available events.
+
+        Args:
+            message: AIMessage that may contain tool_calls
+
+        Yields:
+            SSE-formatted tool events (tool-input-start, tool-input-available)
+        """
+        if not hasattr(message, "tool_calls") or not message.tool_calls:
+            return
+
+        print(f"[TOOL] Found {len(message.tool_calls)} tool call(s)")
+        logger.info(f"[TOOL] Processing {len(message.tool_calls)} tool calls")
+
+        for tool_call in message.tool_calls:
+            tool_call_id = tool_call.get("id") or str(uuid.uuid4())
+            tool_name = tool_call.get("name", "unknown_tool")
+            tool_args = tool_call.get("args", {})
+
+            print(f"[TOOL] Tool call: {tool_name} with ID: {tool_call_id}")
+            logger.info(f"[TOOL] Streaming tool-input-start: {tool_name}(args={tool_args})")
+
+            # Send tool-input-start event (signals tool call beginning)
+            yield self._format_sse_event({
+                "type": "tool-input-start",
+                "toolCallId": tool_call_id,
+                "toolName": tool_name,
+            })
+
+            # Send tool-input-available event (complete parameters)
+            yield self._format_sse_event({
+                "type": "tool-input-available",
+                "toolCallId": tool_call_id,
+                "toolName": tool_name,
+                "input": tool_args,
+            })
+
+    async def _handle_tool_result(self, message: ToolMessage) -> AsyncIterator[str]:
+        """
+        Stream tool output events from ToolMessage following Vercel Data Stream Protocol.
+
+        Args:
+            message: ToolMessage containing tool execution result
+
+        Yields:
+            SSE-formatted tool-output-available events
+        """
+        tool_call_id = message.tool_call_id if hasattr(message, "tool_call_id") else "unknown"
+        result_content = message.content
+
+        print(f"[TOOL] Tool result for call ID: {tool_call_id}")
+        logger.info(f"[TOOL] Streaming tool-output-available for {tool_call_id}: {result_content[:100] if result_content else 'empty'}")
+
+        # Send tool-output-available event (tool execution result)
+        yield self._format_sse_event({
+            "type": "tool-output-available",
+            "toolCallId": tool_call_id,
+            "output": result_content,
+        })
+
     async def stream(
         self,
         graph: StateGraph,
@@ -117,18 +181,32 @@ class LangGraphToVercelAdapter:
             async for chunk in graph.astream(
                 initial_state,
                 config,
-                stream_mode="values",
+                stream_mode="updates",  # Changed from "values" to "updates"
+                subgraphs=True,  # Enable subgraph event streaming (native LangGraph feature)
             ):
                 chunk_count += 1
                 print(f"\n[ADAPTER] ===== Received chunk #{chunk_count} =====")
                 print(f"[ADAPTER] Chunk type: {type(chunk)}")
-                print(f"[ADAPTER] Chunk keys: {list(chunk.keys())}")
-                logger.info(f"[ADAPTER] Received chunk #{chunk_count}: {list(chunk.keys())}")
 
-                # chunk is the state dict itself
-                async for sse_event in self._handle_node_update(chunk):
-                    logger.info(f"[ADAPTER] Yielding SSE event: {sse_event[:100]}...")
-                    yield sse_event
+                # With subgraphs=True, chunks are tuples: (namespace, state_update)
+                # namespace is () for parent graph, ('node_name:uuid',) for subgraphs
+                if isinstance(chunk, tuple) and len(chunk) == 2:
+                    namespace, state_update = chunk
+                    print(f"[ADAPTER] Namespace: {namespace}")
+                    print(f"[ADAPTER] State update keys: {list(state_update.keys())}")
+                    logger.info(f"[ADAPTER] Received chunk #{chunk_count}: namespace={namespace}, keys={list(state_update.keys())}")
+
+                    # Process the state update
+                    async for sse_event in self._handle_node_update(state_update):
+                        logger.info(f"[ADAPTER] Yielding SSE event: {sse_event[:100]}...")
+                        yield sse_event
+                else:
+                    # Fallback for non-tuple chunks (shouldn't happen with subgraphs=True)
+                    print(f"[ADAPTER] Non-tuple chunk keys: {list(chunk.keys()) if isinstance(chunk, dict) else 'N/A'}")
+                    logger.info(f"[ADAPTER] Received non-tuple chunk #{chunk_count}: {list(chunk.keys()) if isinstance(chunk, dict) else type(chunk)}")
+                    async for sse_event in self._handle_node_update(chunk):
+                        logger.info(f"[ADAPTER] Yielding SSE event: {sse_event[:100]}...")
+                        yield sse_event
 
             logger.info(f"[ADAPTER] Stream completed. Total chunks: {chunk_count}")
 
@@ -151,16 +229,17 @@ class LangGraphToVercelAdapter:
 
     async def _handle_node_update(self, chunk: Dict[str, Any]) -> AsyncIterator[str]:
         """
-        Process state from astream(stream_mode="values").
+        Process state updates from astream(stream_mode="updates", subgraphs=True).
 
         Args:
-            chunk: The state dict itself (not wrapped in node names)
+            chunk: The state update dict from a single node execution
                   Format: {'messages': [...], 'requirements': ..., 'itinerary': ..., 'bookings': ...}
+                  With subgraphs=True, this receives updates from both parent and subgraph nodes
 
         Yields:
             SSE-formatted event strings
         """
-        # With stream_mode="values", chunk IS the state dict
+        # With stream_mode="updates", chunk contains the state updates from a node
         state = chunk
         print(f"[STATE] Processing state with keys: {list(state.keys())}")
         logger.info(f"[STATE] Processing state with keys: {list(state.keys())}")
@@ -185,12 +264,27 @@ class LangGraphToVercelAdapter:
                 print(f"[STATE] Last message type: {type(last_message)}")
                 logger.info(f"[STATE] Last message type: {type(last_message)}")
 
+                # Handle ToolMessage (tool execution results)
+                if isinstance(last_message, ToolMessage):
+                    print(f"[STATE] Processing ToolMessage")
+                    logger.info(f"[STATE] Processing ToolMessage")
+                    async for sse_event in self._handle_tool_result(last_message):
+                        yield sse_event
+                    return
+
                 # Only stream AIMessage content (not HumanMessage)
                 # User messages are already in the frontend
                 if not isinstance(last_message, AIMessage):
                     print(f"[STATE] Skipping non-AI message")
                     logger.info(f"[STATE] Skipping non-AI message")
                     return  # Don't stream user messages
+
+                # Check for tool calls first (before streaming text)
+                if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+                    print(f"[STATE] AIMessage has {len(last_message.tool_calls)} tool calls")
+                    logger.info(f"[STATE] AIMessage has {len(last_message.tool_calls)} tool calls")
+                    async for sse_event in self._handle_tool_calls(last_message):
+                        yield sse_event
 
                 # Extract content from AI message
                 content = None
