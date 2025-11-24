@@ -57,10 +57,12 @@ async def stream_travel_system_chat(
 
     # Stream using the pluggable adapter!
     # No need to specify stream_mode or graph-specific logic
+    # Configure custom data fields to stream alongside messages
     async for event in stream_langgraph_to_vercel(
         graph=travel_system_graph,
         initial_state=initial_state,
         config=config,
+        custom_data_fields=["requirements", "itinerary", "bookings"],
     ):
         yield event
 
@@ -87,8 +89,11 @@ async def stream_travel_system_with_custom_extractor(
         default_message_extractor,
     ])
 
-    # Create adapter with custom extractor
-    adapter = LangGraphToVercelAdapter(message_extractor=extractor.extract)
+    # Create adapter with custom extractor and custom data fields
+    adapter = LangGraphToVercelAdapter(
+        message_extractor=extractor.extract,
+        custom_data_fields=["requirements", "itinerary", "bookings"],
+    )
 
     config = {"configurable": {"thread_id": thread_id}}
 

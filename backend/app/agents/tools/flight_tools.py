@@ -25,7 +25,11 @@ def search_flight_availability(origin: str, destination: str) -> dict:
     Returns a small list of candidate options sorted by price.
     Only call this after you have the origin, destination, and date.
     """
-    print(f"--- TOOL CALLED: Searching flights from {origin} to {destination} ---")
+    # TOOL ENTRY LOG
+    print(f"\n[FLIGHT_SEARCH_TOOL] ===== TOOL START =====")
+    print(f"[FLIGHT_SEARCH_TOOL] Input parameters:")
+    print(f"[FLIGHT_SEARCH_TOOL]   origin: {origin}")
+    print(f"[FLIGHT_SEARCH_TOOL]   destination: {destination}")
 
     api_url = f"{settings.CONVEX_BASE_URL}/flights/search"
     params = {"origin": origin, "destination": destination}
@@ -36,18 +40,31 @@ def search_flight_availability(origin: str, destination: str) -> dict:
 
         flights = response.json().get("flights", [])
 
+        # TOOL EXIT LOG - Success case
+        result = None
         if not flights:
-            return {"available": False, "options": []}
+            result = {"available": False, "options": []}
+            print(f"[FLIGHT_SEARCH_TOOL] No flights available")
+        else:
+            result = {"available": True, "options": flights}
+            print(f"[FLIGHT_SEARCH_TOOL] Flights found: {len(flights)} option(s)")
+            for idx, flight in enumerate(flights[:3]):  # Log first 3 flights
+                print(f"[FLIGHT_SEARCH_TOOL]   Option {idx+1}: {flight.get('id', 'N/A')} - ${flight.get('price', 'N/A')}")
 
-        return {"available": True, "options": flights}
+        print(f"[FLIGHT_SEARCH_TOOL] ===== TOOL COMPLETE =====\n")
+        return result
 
     except requests.exceptions.RequestException as e:
-        print(f"API call failed: {e}")
-        return {"available": False, "options": [], "error": str(e)}
+        print(f"[FLIGHT_SEARCH_TOOL] API call failed: {e}")
+        result = {"available": False, "options": [], "error": str(e)}
+        print(f"[FLIGHT_SEARCH_TOOL] ===== TOOL COMPLETE (ERROR) =====\n")
+        return result
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        return {
+        print(f"[FLIGHT_SEARCH_TOOL] An unexpected error occurred: {e}")
+        result = {
             "available": False,
             "options": [],
             "error": "An internal error occurred.",
         }
+        print(f"[FLIGHT_SEARCH_TOOL] ===== TOOL COMPLETE (ERROR) =====\n")
+        return result

@@ -33,6 +33,18 @@ def requirements_subgraph_node(
     Propagates interrupts to the top-level graph so the API can handle them.
     When resuming from an interrupt, resumes the subgraph with user input.
     """
+    # NODE ENTRY LOG
+    print(f"\n[REQUIREMENTS_SUBGRAPH] ===== NODE START =====")
+    print(f"[REQUIREMENTS_SUBGRAPH] State keys received: {list(state.keys())}")
+    for key in state.keys():
+        value = state.get(key)
+        if value is None:
+            print(f"[REQUIREMENTS_SUBGRAPH]   {key}: None")
+        elif isinstance(value, (list, dict)):
+            print(f"[REQUIREMENTS_SUBGRAPH]   {key}: {type(value).__name__} (len={len(value)})")
+        else:
+            print(f"[REQUIREMENTS_SUBGRAPH]   {key}: {type(value).__name__}")
+
     # Extract parent's thread_id from config and derive subgraph thread_id
     # RunnableConfig is dict-like with "configurable" key containing thread_id
     configurable = config.get("configurable", {}) if config else {}
@@ -107,25 +119,51 @@ def requirements_subgraph_node(
     else:
         summary = "I've gathered your travel requirements. Let me create an itinerary for you..."
 
-    # The result contains 'requirements' field populated when complete
-    return {
+    # NODE EXIT LOG
+    result = {
         "messages": [AIMessage(content=summary, name="requirements")],
         "requirements": requirements,
         "itinerary": None,
         "bookings": None,
     }
+    print(f"[REQUIREMENTS_SUBGRAPH] Returning state update:")
+    for key, value in result.items():
+        if value is None:
+            print(f"[REQUIREMENTS_SUBGRAPH]   {key}: None")
+        elif isinstance(value, (list, dict)):
+            print(f"[REQUIREMENTS_SUBGRAPH]   {key}: {type(value).__name__} (len={len(value)})")
+        else:
+            print(f"[REQUIREMENTS_SUBGRAPH]   {key}: {type(value).__name__}")
+    if requirements:
+        print(f"[REQUIREMENTS_SUBGRAPH] Requirements state: {list(requirements.keys())}")
+    print(f"[REQUIREMENTS_SUBGRAPH] ===== NODE COMPLETE =====\n")
+
+    # The result contains 'requirements' field populated when complete
+    return result
 
 
 def planner_agent_node(state: TravelSystemState) -> TravelSystemState:
     """
     Invoke planner agent to create itinerary based on requirements.
     """
+    # NODE ENTRY LOG
+    print(f"\n[PLANNER_AGENT] ===== NODE START =====")
+    print(f"[PLANNER_AGENT] State keys received: {list(state.keys())}")
+    for key in state.keys():
+        value = state.get(key)
+        if value is None:
+            print(f"[PLANNER_AGENT]   {key}: None")
+        elif isinstance(value, (list, dict)):
+            print(f"[PLANNER_AGENT]   {key}: {type(value).__name__} (len={len(value)})")
+        else:
+            print(f"[PLANNER_AGENT]   {key}: {type(value).__name__}")
+
     requirements = state.get("requirements")
 
     # Format requirements into context message for planner
     requirements_str = json.dumps(requirements, indent=2)
     planner_prompt = f"""Based on the following travel requirements, create a day-by-day itinerary:
-    
+
 {requirements_str}"""
 
     # Invoke planner agent
@@ -142,18 +180,44 @@ def planner_agent_node(state: TravelSystemState) -> TravelSystemState:
     else:
         summary = "I've created your itinerary. Now let me book your flights and accommodations..."
 
-    return {
+    # NODE EXIT LOG
+    result = {
         "messages": [AIMessage(content=summary, name="planner")],
         "requirements": requirements,
         "itinerary": itinerary,
         "bookings": None,
     }
+    print(f"[PLANNER_AGENT] Returning state update:")
+    for key, value in result.items():
+        if value is None:
+            print(f"[PLANNER_AGENT]   {key}: None")
+        elif isinstance(value, (list, dict)):
+            print(f"[PLANNER_AGENT]   {key}: {type(value).__name__} (len={len(value)})")
+        else:
+            print(f"[PLANNER_AGENT]   {key}: {type(value).__name__}")
+    if itinerary:
+        print(f"[PLANNER_AGENT] Itinerary days count: {len(itinerary.get('days', []))}")
+    print(f"[PLANNER_AGENT] ===== NODE COMPLETE =====\n")
+
+    return result
 
 
 def booker_agent_node(state: TravelSystemState) -> TravelSystemState:
     """
     Invoke booker agent to book flights and hotels based on requirements and itinerary.
     """
+    # NODE ENTRY LOG
+    print(f"\n[BOOKER_AGENT] ===== NODE START =====")
+    print(f"[BOOKER_AGENT] State keys received: {list(state.keys())}")
+    for key in state.keys():
+        value = state.get(key)
+        if value is None:
+            print(f"[BOOKER_AGENT]   {key}: None")
+        elif isinstance(value, (list, dict)):
+            print(f"[BOOKER_AGENT]   {key}: {type(value).__name__} (len={len(value)})")
+        else:
+            print(f"[BOOKER_AGENT]   {key}: {type(value).__name__}")
+
     requirements = state.get("requirements")
     itinerary = state.get("itinerary")
 
@@ -192,12 +256,30 @@ Return booking confirmations for both flight and hotel."""
 
     summary += " All details are shown below. Have a wonderful trip!"
 
-    return {
+    # NODE EXIT LOG
+    result = {
         "messages": [AIMessage(content=summary, name="booker")],
         "requirements": requirements,
         "itinerary": itinerary,
         "bookings": bookings,
     }
+    print(f"[BOOKER_AGENT] Returning state update:")
+    for key, value in result.items():
+        if value is None:
+            print(f"[BOOKER_AGENT]   {key}: None")
+        elif isinstance(value, (list, dict)):
+            print(f"[BOOKER_AGENT]   {key}: {type(value).__name__} (len={len(value)})")
+        else:
+            print(f"[BOOKER_AGENT]   {key}: {type(value).__name__}")
+    if bookings:
+        print(f"[BOOKER_AGENT] Bookings keys: {list(bookings.keys())}")
+        if bookings.get('flights'):
+            print(f"[BOOKER_AGENT]   Flight booking: {bookings['flights'].get('status', 'unknown')}")
+        if bookings.get('hotels'):
+            print(f"[BOOKER_AGENT]   Hotel booking: {bookings['hotels'].get('status', 'unknown')}")
+    print(f"[BOOKER_AGENT] ===== NODE COMPLETE =====\n")
+
+    return result
 
 
 # Build the graph
@@ -215,26 +297,3 @@ graph.add_edge("booker", END)
 
 # Compile the graph
 travel_system_graph = graph.compile(checkpointer=checkpointer)
-
-
-if __name__ == "__main__":
-    initial_state = TravelSystemState(
-        messages=[
-            HumanMessage(
-                content="I want to go to Seoul(ICN) from Tokyo(NRT). My dates are flexible."
-            )
-        ],
-        requirements=None,
-        itinerary=None,
-        bookings=None,
-    )
-
-    config = {"configurable": {"thread_id": "thread-1"}}
-
-    # Invoke the graph - interrupt loop is now handled inside requirements_subgraph_node
-    result = travel_system_graph.invoke(initial_state, config)
-
-    print("\n=== FINAL RESULTS ===")
-    print(f"Requirements: {json.dumps(result.get('requirements'), indent=2)}")
-    print(f"\nItinerary: {json.dumps(result.get('itinerary'), indent=2)}")
-    print(f"\nBookings: {json.dumps(result.get('bookings'), indent=2)}")
